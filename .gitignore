@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# 向量数据库（可重建）
+_faiss/
+chroma_db/
+
+# TXT 归档输出（自动生成）
+*_TXT归档/
+
+# 测试/归档目录
+Yaoke3_Archives/
+Yaoke3_Archive/
+
+# IDE
+.vscode/settings.json
+
+# 系统文件
+Thumbs.db
+Desktop.ini
+~$*
