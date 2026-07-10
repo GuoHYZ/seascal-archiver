@@ -83,6 +83,12 @@ def _split_text(content, source_rel, max_chars, min_chars, overlap):
     return result
 
 
+def _build_embedding_text(chunk):
+    metadata = chunk["metadata"]
+    source = metadata.get("source", "")
+    return "文件路径: {}\n\n正文:\n{}".format(source, chunk["text"])
+
+
 def _load_embedder():
     backend = cfg.EMBED_BACKEND.lower()
     if backend == "local":
@@ -153,8 +159,7 @@ def build_index(txt_dir=None):
 
     # ---- 向量化 ----
     print("\n向量化 {} 个文本块...".format(len(all_chunks)))
-    texts = [c["text"] for c in all_chunks]
-    metadatas = [c["metadata"] for c in all_chunks]
+    texts = [_build_embedding_text(c) for c in all_chunks]
     embeddings = np.array(model.encode(texts, normalize_embeddings=True, show_progress_bar=True)).astype("float32")
 
     # ---- 构建 FAISS 索引 ----

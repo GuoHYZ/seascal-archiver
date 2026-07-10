@@ -19,6 +19,7 @@
 
 import json
 import os
+import re
 import ssl as _ssl
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -37,6 +38,31 @@ def _configure_stdio():
         stream = getattr(sys, stream_name, None)
         if stream and hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace")
+
+
+def _normalize_query(query):
+    return re.sub(r"\s+", " ", query).strip()
+
+
+def _extract_query_terms(query):
+    normalized = _normalize_query(query)
+    if not normalized:
+        return []
+    terms = [term.strip() for term in re.split(r"\s+", normalized) if term.strip()]
+    return list(dict.fromkeys(terms))
+
+
+def _score_keyword_hits(text, source, terms):
+    score = 0.0
+    source_lower = source.lower()
+    text_lower = text.lower()
+    for term in terms:
+        lowered = term.lower()
+        if lowered in source_lower:
+            score += 0.12
+        if lowered in text_lower:
+            score += 0.03
+    return score
 
 
 class SearchBackend:
@@ -107,7 +133,8 @@ class SearchBackend:
         return index, meta["records"]
 
     def search(self, query, top_k=None):
-        if not query or not query.strip():
+        query = _normalize_query(query)
+        if not query:
             raise ValueError("query 不能为空")
 
         if self.model is None or self.index is None or self.records is None:
@@ -121,25 +148,32 @@ class SearchBackend:
         query_vec = np.array(
             [self.model.encode([query], normalize_embeddings=True)[0]]
         ).astype("float32")
-        scores, indices = self.index.search(query_vec, int(top_k))
+        candidate_k = max(int(top_k) * 8, 20)
+        scores, indices = self.index.search(query_vec, candidate_k)
+        pairs = list(zip(indices[0], scores[0]))
+        query_terms = _extract_query_terms(query)
 
         results = []
-        for idx, score in zip(indices[0], scores[0]):
+        for idx, score in pairs:
             if idx < 0 or idx >= len(self.records):
                 continue
             rec = self.records[idx]
             meta = rec["metadata"]
+            source = meta.get("source", "未知")
+            text = rec["text"]
+            rerank_score = float(score) + _score_keyword_hits(text, source, query_terms)
             results.append(
                 {
-                    "text": rec["text"],
-                    "source": meta.get("source", "未知"),
+                    "text": text,
+                    "source": source,
                     "chunk_index": meta.get("chunk_index", 0),
-                    "score": round(float(score), 4),
+                    "score": round(rerank_score, 4),
                     "char_start": meta.get("char_start", 0),
                     "total_chunks": meta.get("total_chunks", 1),
                 }
             )
-        return results
+        results.sort(key=lambda item: item["score"], reverse=True)
+        return results[: int(top_k)]
 
 
 def _parse_args(argv):
