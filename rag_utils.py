@@ -122,12 +122,21 @@ def load_embedder():
                 device = "mps"  # Apple Silicon GPU
             else:
                 device = "cpu"
-                # CPU 多线程优化，避免只用1个核
-                cpu_count = os.cpu_count() or 4
-                torch.set_num_threads(min(cpu_count, 8))
 
         print("加载本地模型: {} (device={})...".format(cfg.LOCAL_MODEL_NAME, device))
         model = SentenceTransformer(cfg.LOCAL_MODEL_NAME, device=device)
+
+        # 如果最终使用CPU，启用多线程优化（避免只用1个核）
+        if str(model.device) == "cpu":
+            import torch
+            try:
+                cpu_count = os.cpu_count()
+            except Exception:
+                cpu_count = None
+            if cpu_count is None or cpu_count < 1:
+                cpu_count = 4
+            torch.set_num_threads(min(cpu_count, 8))
+
         print("  模型加载完成，运行设备: {}".format(model.device))
         return model
 
