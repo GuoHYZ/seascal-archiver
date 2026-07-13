@@ -62,6 +62,14 @@ CHUNK_MIN_CHARS = 200
 CHUNK_OVERLAP = 100
 
 # ============================================================
+# 文档转换配置
+# ============================================================
+
+# XLSX 最大读取行数（0 = 不限制，读取全部行）
+# 对于数十万行的超大表格建议设置上限（如 50000），避免内存溢出
+XLSX_MAX_ROWS = 0
+
+# ============================================================
 # LLM 配置（search_rag.py --llm 模式使用）
 # ============================================================
 
@@ -76,5 +84,69 @@ LLM_MODEL_NAME = "deepseek-chat"              # 也可用 gpt-4o-mini / qwen-tur
 # 检索时返回的文本块数量
 SEARCH_TOP_K = 5
 
+# ============================================================
+# 混合检索配置（BM25 + 向量）
+# ============================================================
+
+# 是否启用混合检索
+HYBRID_ENABLED = True
+
+# 每路检索的召回倍数（每路取 top_k × RECALL_K，融合后截取 top_k）
+HYBRID_RECALL_K = 3
+
+# RRF（倒数排名融合）平滑常数，经典值 60
+RRF_K = 60
+
+# BM25 参数
+BM25_K1 = 1.2    # 词频饱和度（经典值 1.2-2.0）
+BM25_B = 0.75    # 长度归一化（经典值 0.75）
+
 # 每次发给 LLM 的最大上下文字符数
 LLM_MAX_CONTEXT_CHARS = 8000
+
+
+def validate():
+    """
+    校验配置参数合法性，发现矛盾配置立即报错。
+    在 build_rag.py / search_rag.py / search_backend.py 首次导入时自动调用。
+    """
+    errors = []
+
+    if CHUNK_MIN_CHARS > CHUNK_MAX_CHARS:
+        errors.append(
+            "CHUNK_MIN_CHARS ({}) 不能大于 CHUNK_MAX_CHARS ({})".format(
+                CHUNK_MIN_CHARS, CHUNK_MAX_CHARS
+            )
+        )
+    if CHUNK_OVERLAP >= CHUNK_MAX_CHARS:
+        errors.append(
+            "CHUNK_OVERLAP ({}) 应小于 CHUNK_MAX_CHARS ({})".format(
+                CHUNK_OVERLAP, CHUNK_MAX_CHARS
+            )
+        )
+    if CHUNK_OVERLAP < 0:
+        errors.append("CHUNK_OVERLAP 不能为负数")
+    if CHUNK_MAX_CHARS < 100:
+        errors.append("CHUNK_MAX_CHARS 过小（< 100），建议 >= 300")
+    if CHUNK_MIN_CHARS < 50:
+        errors.append("CHUNK_MIN_CHARS 过小（< 50），建议 >= 100")
+
+    valid_backends = ("local", "openai", "siliconflow")
+    if EMBED_BACKEND.lower() not in valid_backends:
+        errors.append(
+            "不支持的 EMBED_BACKEND: '{}'，可选值: {}".format(
+                EMBED_BACKEND, ", ".join(valid_backends)
+            )
+        )
+
+    if SEARCH_TOP_K < 1:
+        errors.append("SEARCH_TOP_K 必须 >= 1")
+
+    if errors:
+        raise ValueError(
+            "rag_config 配置错误:\n" + "\n".join("  - {}".format(e) for e in errors)
+        )
+
+
+# 导入时自动校验配置
+validate()

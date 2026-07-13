@@ -13,15 +13,12 @@ DOCX 文档转 TXT 模块。
 from pathlib import Path
 import traceback
 
+from rag_utils import escape_md_cell
+
 try:
     from docx import Document
 except ImportError:
     Document = None
-
-
-def _escape_md_cell(text):
-    """清理表格单元格文本，替换换行和竖线。"""
-    return text.replace("\n", " ").replace("\r", " ").replace("|", "\\|")
 
 
 def _table_to_markdown(table):
@@ -38,7 +35,7 @@ def _table_to_markdown(table):
     for row in rows:
         row_data = []
         for cell in row.cells:
-            row_data.append(_escape_md_cell(cell.text.strip()))
+            row_data.append(escape_md_cell(cell.text.strip()))
         table_data.append(row_data)
 
     if not table_data or not table_data[0]:
@@ -73,48 +70,37 @@ def _table_to_markdown(table):
 def _extract_docx_content(doc):
     """
     按文档原始顺序遍历段落和表格，返回文本行列表。
-    文档结构：paragraph 和 table 按顺序交替出现。
-    """
-    lines = []
 
-    # python-docx 不直接提供顺序迭代器，通过 iterblock_items 模式处理
-    # 方式：遍历 document.body 的 XML 子元素，判断是段落还是表格
+    使用字典映射避免 O(n²) 遍历：将 element 到对象做一次映射后 O(1) 查找。
+    原实现每个 XML 子元素都遍历全部 paragraph/table 列表做线性查找。
+    """
     from docx.oxml.ns import qn
 
+    # 一次性构建 element -> 对象的映射（O(n)）
+    para_map = {p._element: p for p in doc.paragraphs}
+    table_map = {t._element: t for t in doc.tables}
+
+    lines = []
     body = doc.element.body
 
     for child in body:
         tag = child.tag
 
-        # 段落
         if tag == qn("w:p"):
-            text = ""
-            try:
-                # 获取该元素对应的 Paragraph 对象
-                # 通过 Element 定位到对应的 paragraph
-                for para in doc.paragraphs:
-                    if para._element is child:
-                        text = para.text.strip()
-                        break
-            except Exception:
-                pass
+            para = para_map.get(child)
+            if para is not None:
+                text = para.text.strip()
+                if text:
+                    lines.append(text)
 
-            if text:
-                lines.append(text)
-
-        # 表格
         elif tag == qn("w:tbl"):
-            try:
-                for table in doc.tables:
-                    if table._element is child:
-                        md_table = _table_to_markdown(table)
-                        if md_table:
-                            lines.append("")
-                            lines.append(md_table)
-                            lines.append("")
-                        break
-            except Exception:
-                pass
+            table = table_map.get(child)
+            if table is not None:
+                md_table = _table_to_markdown(table)
+                if md_table:
+                    lines.append("")
+                    lines.append(md_table)
+                    lines.append("")
 
     return lines
 

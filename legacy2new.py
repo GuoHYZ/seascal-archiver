@@ -14,9 +14,11 @@
 """
 
 from pathlib import Path
+from typing import Optional, Union
 
 try:
     import win32com.client
+
     HAS_COM = True
 except ImportError:
     HAS_COM = False
@@ -24,12 +26,13 @@ except ImportError:
 
 # Office 文件格式常量
 # 来源：https://docs.microsoft.com/en-us/office/vba/api/overview/
-WD_FORMAT_DOCX = 16    # Word 2007+ XML (.docx)
-PP_SAVE_AS_PPTX = 27   # PowerPoint 2007+ (.pptx) — ppSaveAsXMLPresentation
+WD_FORMAT_DOCX = 16  # Word 2007+ XML (.docx)
+PP_SAVE_AS_PPTX = 27  # PowerPoint 2007+ (.pptx) — ppSaveAsXMLPresentation
 XL_OPEN_XML_WORKBOOK = 51  # Excel 2007+ (.xlsx)
 
 
-def _get_output_path(src_path: Path) -> Path:
+def _get_output_path(src_path):
+    # type: (Path) -> Path
     """根据源文件生成新格式的输出路径。"""
     new_ext = {
         ".doc": ".docx",
@@ -39,7 +42,17 @@ def _get_output_path(src_path: Path) -> Path:
     return src_path.with_suffix(new_ext)
 
 
-def doc_to_docx(src_path: Path) -> Path | None:
+def _safe_quit(app, name=""):
+    """安全关闭 Office 应用，避免残留进程。"""
+    if app is not None:
+        try:
+            app.Quit()
+        except Exception:
+            pass
+
+
+def doc_to_docx(src_path):
+    # type: (Path) -> Optional[Path]
     """.doc → .docx，失败返回 None。"""
     if not HAS_COM:
         print("  [警告] pywin32 未安装，无法转换 .doc")
@@ -61,14 +74,11 @@ def doc_to_docx(src_path: Path) -> Path | None:
         print(f"  [错误] .doc 转换失败: {e}")
         return None
     finally:
-        if word is not None:
-            try:
-                word.Quit()
-            except Exception:
-                pass
+        _safe_quit(word)
 
 
-def ppt_to_pptx(src_path: Path) -> Path | None:
+def ppt_to_pptx(src_path):
+    # type: (Path) -> Optional[Path]
     """.ppt → .pptx，失败返回 None。"""
     if not HAS_COM:
         print("  [警告] pywin32 未安装，无法转换 .ppt")
@@ -81,7 +91,6 @@ def ppt_to_pptx(src_path: Path) -> Path | None:
     ppt = None
     try:
         ppt = win32com.client.Dispatch("PowerPoint.Application")
-        # PowerPoint 不可见模式在部分版本不稳定，用 msoFalse 隐藏
         presentation = ppt.Presentations.Open(str(src_path), WithWindow=False)
         presentation.SaveAs(str(dest), PP_SAVE_AS_PPTX)
         presentation.Close()
@@ -90,14 +99,11 @@ def ppt_to_pptx(src_path: Path) -> Path | None:
         print(f"  [错误] .ppt 转换失败: {e}")
         return None
     finally:
-        if ppt is not None:
-            try:
-                ppt.Quit()
-            except Exception:
-                pass
+        _safe_quit(ppt)
 
 
-def xls_to_xlsx(src_path: Path) -> Path | None:
+def xls_to_xlsx(src_path):
+    # type: (Path) -> Optional[Path]
     """.xls → .xlsx，失败返回 None。"""
     if not HAS_COM:
         print("  [警告] pywin32 未安装，无法转换 .xls")
@@ -119,11 +125,7 @@ def xls_to_xlsx(src_path: Path) -> Path | None:
         print(f"  [错误] .xls 转换失败: {e}")
         return None
     finally:
-        if excel is not None:
-            try:
-                excel.Quit()
-            except Exception:
-                pass
+        _safe_quit(excel)
 
 
 # 注册表：扩展名 → 转换函数
@@ -134,7 +136,8 @@ CONVERTERS = {
 }
 
 
-def convert(source_path) -> Path | None:
+def convert(source_path):
+    # type: (Union[str, Path]) -> Optional[Path]
     """
     统一转换接口：旧格式 → 新格式。
 
@@ -161,6 +164,7 @@ def convert(source_path) -> Path | None:
 # ============================================================
 if __name__ == "__main__":
     import sys
+
     if len(sys.argv) < 2:
         print("用法: python legacy2new.py <旧文件.doc|ppt|xls>")
         sys.exit(1)

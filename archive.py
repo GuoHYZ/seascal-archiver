@@ -184,7 +184,6 @@ def _file_fingerprint(file_path):
     try:
         stat = file_path.stat()
         size = stat.st_size
-        # 保留 mtime 仅用于索引显示（_classify_files 中另行处理）
         mtime = stat.st_mtime
     except OSError:
         return None
@@ -197,7 +196,6 @@ def _file_fingerprint(file_path):
         digest = sha256.hexdigest()
         return (digest, size, mtime)
     except (IOError, OSError):
-        # 回退：读取失败则用大小 + mtime
         return (None, size, mtime)
 
 
@@ -212,8 +210,8 @@ def _classify_files(flat_files, input_root, output_dir, prev_meta, incremental):
     incremental: bool — 是否启用增量模式
 
     返回: (to_convert, skipped, stale_outputs)
-        to_convert:   list of (ext, Path) — 需要转换的文件
-        skipped:      list of (ext, Path, str) — 跳过的文件及原因
+        to_convert:    list of (ext, Path) — 需要转换的文件
+        skipped:       list of (ext, Path, str) — 跳过的文件及原因
         stale_outputs: list of Path — 源文件已删除但 TXT 残留的路径
     """
     to_convert = []
@@ -241,24 +239,19 @@ def _classify_files(flat_files, input_root, output_dir, prev_meta, incremental):
         prev_info = prev_files.get(rel_key)
 
         if fp is None:
-            # 无法读取文件状态（权限等），强制转换
             to_convert.append((ext, src_path))
         elif prev_info is None:
-            # 新文件
             to_convert.append((ext, src_path))
         elif (fp[0] != prev_info.get("sha256") or fp[1] != prev_info.get("size")):
-            # 文件内容已修改（SHA256 或文件大小变化）
             to_convert.append((ext, src_path))
         else:
-            # 文件未变，检查 TXT 是否存在
             dest = _mirror_output_path(src_path, input_root, output_dir)
             if dest.exists():
                 skipped.append((ext, src_path, "未变更"))
             else:
-                # TXT 丢失但源文件未变，重新生成
                 to_convert.append((ext, src_path))
 
-    # 检测过时输出（增量模式下源文件已删除但 TXT 残留）
+    # 检测过时输出
     if incremental and prev_files:
         for rel_key, info in prev_files.items():
             if rel_key not in current_rel_paths:
@@ -318,7 +311,6 @@ def _write_index(output_root, records, skipped_count=0, stale_count=0):
     if success_count > 0:
         lines.append("【成功】")
         lines.append("")
-        # 表头
         lines.append("  {fmt:14s} {rel:48s} {chars:>8s}  {mtime:12s}".format(
             fmt="格式", rel="文件路径", chars="字符数", mtime="源文件修改时间"
         ))
@@ -402,35 +394,44 @@ def archive(input_dir, output_dir, incremental=False, clean_stale=False):
     print("找到 {} 个文档文件".format(total_count))
     for ext, files in sorted(files_by_ext.items()):
         print("  {}: {} 个".format(ext, len(files)))
+
     # ---- 旧格式转换：.doc/.ppt/.xls → 新格式 ----
     if legacy_files:
         print("\n正在转换 {} 个旧格式文件...".format(len(legacy_files)))
         legacy_success = 0
         legacy_failed = 0
-        for lf in legacy_files:
-            # 尝试导入 legacy2new 模块
-            try:
-                import legacy2new
-                new_path = legacy2new.convert(lf)
-            except ImportError:
-                print("  [警告] pywin32 未安装，无法转换旧格式")
-                print("         请安装: pip install pywin32")
-                break
-            except Exception as e:
-                print("  [错误] 旧格式转换异常: {}".format(e))
-                new_path = None
 
-            if new_path and new_path.exists():
-                ext_new = new_path.suffix.lower()
-                files_by_ext.setdefault(ext_new, []).append(new_path)
-                legacy_success += 1
-                print("  [OK] {} → {}".format(lf.name, new_path.name))
+        # 一次性导入 legacy2new（避免循环内重复 import）
+        try:
+            import legacy2new
+            HAS_LEGACY = True
+        except ImportError:
+            HAS_LEGACY = False
+            print("  [警告] pywin32 未安装，无法转换旧格式")
+            print("         请安装: pip install pywin32")
 
-                # 将转换后的文件也计入 total_count（它在扫描阶段被计了一次）
-                # 注意：不需要额外增加 total_count，原文件已在计数中
-            else:
-                legacy_failed += 1
-                print("  [FAIL] {} 转换失败，跳过".format(lf.name))
+        if HAS_LEGACY:
+            for lf in legacy_files:
+                try:
+                    new_path = legacy2new.convert(lf)
+                except Exception as e:
+                    print("  [错误] 旧格式转换异常: {}".format(e))
+                    new_path = None
+
+                if new_path and new_path.exists():
+                    ext_new = new_path.suffix.lower()
+                    existing_list = files_by_ext.setdefault(ext_new, [])
+                    if new_path not in existing_list:
+                        existing_list.append(new_path)
+                        legacy_success += 1
+                        print("  [OK] {} → {}".format(lf.name, new_path.name))
+                    else:
+                        # .doc 转换后发现 .docx 已在目录中 → 无需重复追加
+                        print("  [跳过] {} → {} (已存在)".format(lf.name, new_path.name))
+                else:
+                    legacy_failed += 1
+                    print("  [FAIL] {} 转换失败，跳过".format(lf.name))
+
         if legacy_success:
             print("  旧格式转换完成: 成功 {}, 失败 {}".format(legacy_success, legacy_failed))
 

@@ -3,7 +3,7 @@
 本地 RAG 查询后端。
 
 用途：
-1. 启动时只加载一次 embedding 模型和 FAISS 索引
+1. 启动时只加载一次 embedding 模型和 FAISS/BM25 索引
 2. 通过本地 HTTP 接口提供 UTF-8 JSON 检索结果
 3. 适合作为 AionUI 等应用的外部知识库查询后端
 
@@ -20,49 +20,18 @@
 import json
 import os
 import re
-import ssl as _ssl
+import signal
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-os.environ["HF_HUB_DISABLE_SSL_VERIFY"] = "1"
-os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
-_ssl._create_default_https_context = _ssl._create_unverified_context
-
 import rag_config as cfg
-
-
-def _configure_stdio():
-    for stream_name in ("stdout", "stderr"):
-        stream = getattr(sys, stream_name, None)
-        if stream and hasattr(stream, "reconfigure"):
-            stream.reconfigure(encoding="utf-8", errors="replace")
+from rag_utils import _configure_stdio, load_embedder, BM25Index, rrf_fusion
 
 
 def _normalize_query(query):
     return re.sub(r"\s+", " ", query).strip()
-
-
-def _extract_query_terms(query):
-    normalized = _normalize_query(query)
-    if not normalized:
-        return []
-    terms = [term.strip() for term in re.split(r"\s+", normalized) if term.strip()]
-    return list(dict.fromkeys(terms))
-
-
-def _score_keyword_hits(text, source, terms):
-    score = 0.0
-    source_lower = source.lower()
-    text_lower = text.lower()
-    for term in terms:
-        lowered = term.lower()
-        if lowered in source_lower:
-            score += 0.12
-        if lowered in text_lower:
-            score += 0.03
-    return score
 
 
 class SearchBackend:
@@ -72,6 +41,7 @@ class SearchBackend:
         self.model = None
         self.index = None
         self.records = None
+        self.bm25 = None
 
     def load(self):
         if not self.faiss_dir.exists():
@@ -80,42 +50,8 @@ class SearchBackend:
             )
 
         self.index, self.records = self._load_faiss_and_meta()
-        self.model = self._load_embedder()
-
-    def _load_embedder(self):
-        backend = cfg.EMBED_BACKEND.lower()
-        if backend == "local":
-            import ssl
-            from sentence_transformers import SentenceTransformer
-
-            ssl._create_default_https_context = ssl._create_unverified_context
-            device = cfg.DEVICE
-            return (
-                SentenceTransformer(cfg.LOCAL_MODEL_NAME, device=device)
-                if device
-                else SentenceTransformer(cfg.LOCAL_MODEL_NAME)
-            )
-
-        if backend in ("openai", "siliconflow"):
-            api_key = cfg.EMBED_API_KEY or os.environ.get("EMBED_API_KEY", "")
-            if not api_key:
-                raise ValueError("请设置 EMBED_API_KEY")
-            from openai import OpenAI
-
-            client = OpenAI(api_key=api_key, base_url=cfg.EMBED_API_BASE)
-
-            class APIEmbedder:
-                def __init__(self, c, m):
-                    self.client = c
-                    self.model = m
-
-                def encode(self, texts, **kwargs):
-                    resp = self.client.embeddings.create(model=self.model, input=texts)
-                    return [d.embedding for d in resp.data]
-
-            return APIEmbedder(client, cfg.EMBED_MODEL_NAME)
-
-        raise ValueError("不支持的 EMBED_BACKEND: {}".format(backend))
+        self.model = load_embedder()
+        self.bm25 = self._load_bm25()
 
     def _load_faiss_and_meta(self):
         import faiss
@@ -132,6 +68,46 @@ class SearchBackend:
             meta = json.load(f)
         return index, meta["records"]
 
+    def _load_bm25(self):
+        bm25_path = self.faiss_dir / "bm25.pkl"
+        if not bm25_path.exists():
+            print("  [提示] BM25 索引不存在，使用纯向量检索模式。")
+            print("         重新运行 build_rag.py 可构建 BM25 索引。")
+            return None
+        try:
+            bm25 = BM25Index.load(bm25_path)
+            print("  BM25 索引已加载 ({} 条)".format(bm25.N))
+            return bm25
+        except Exception as e:
+            print("  [警告] BM25 索引加载失败: {}，回退到纯向量模式。".format(e))
+            return None
+
+    def _vector_search(self, query_vec, top_k):
+        """纯向量检索，使用归一化后内积 = 余弦相似度。"""
+        candidate_k = max(int(top_k) * 8, 20)
+        scores, indices = self.index.search(query_vec, candidate_k)
+        pairs = []
+        for idx, score in zip(indices[0], scores[0]):
+            if 0 <= idx < len(self.records):
+                pairs.append((int(idx), float(score)))
+        return pairs[:top_k]
+
+    def _format_result(self, idx, score, source_extra=""):
+        """将记录索引 + 分数格式化为结果 dict。"""
+        rec = self.records[idx]
+        meta = rec["metadata"]
+        result = {
+            "text": rec["text"],
+            "source": meta.get("source", "未知"),
+            "chunk_index": meta.get("chunk_index", 0),
+            "score": round(score, 4),
+            "char_start": meta.get("char_start", 0),
+            "total_chunks": meta.get("total_chunks", 1),
+        }
+        if source_extra:
+            result["source_extra"] = source_extra
+        return result
+
     def search(self, query, top_k=None):
         query = _normalize_query(query)
         if not query:
@@ -145,35 +121,70 @@ class SearchBackend:
 
         import numpy as np
 
+        # 向量检索
         query_vec = np.array(
             [self.model.encode([query], normalize_embeddings=True)[0]]
         ).astype("float32")
+
+        # 如果启用混合检索且 BM25 可用
+        if cfg.HYBRID_ENABLED and self.bm25 is not None:
+            recall_k = max(int(top_k) * cfg.HYBRID_RECALL_K, top_k + 5)
+
+            # 两路召回
+            bm25_pairs = self.bm25.search(query, top_k=recall_k)
+            vector_pairs = self._vector_search(query_vec, recall_k)
+
+            # RRF 融合
+            fused = rrf_fusion([bm25_pairs, vector_pairs], k=cfg.RRF_K)
+            top_indices = fused[:int(top_k)]
+
+            results = []
+            for idx, fused_score in top_indices:
+                rec = self.records[idx]
+                meta = rec["metadata"]
+                # 分别记录各路分数供调试
+                bm25_score = next((s for i, s in bm25_pairs if i == idx), 0.0)
+                vector_score = next((s for i, s in vector_pairs if i == idx), 0.0)
+                results.append({
+                    "text": rec["text"],
+                    "source": meta.get("source", "未知"),
+                    "chunk_index": meta.get("chunk_index", 0),
+                    "score": round(fused_score, 4),
+                    "bm25_score": round(bm25_score, 4),
+                    "vector_score": round(vector_score, 4),
+                    "char_start": meta.get("char_start", 0),
+                    "total_chunks": meta.get("total_chunks", 1),
+                })
+            return results
+
+        # 纯向量模式：多召回 + 简单关键词微调
         candidate_k = max(int(top_k) * 8, 20)
-        scores, indices = self.index.search(query_vec, candidate_k)
-        pairs = list(zip(indices[0], scores[0]))
-        query_terms = _extract_query_terms(query)
+        pairs = self._vector_search(query_vec, candidate_k)
+
+        import re as _re
+        query_terms = list(dict.fromkeys(
+            t.strip() for t in _re.split(r"\s+", query) if t.strip()
+        ))
+        def _keyword_bonus(text, source, terms):
+            bonus = 0.0
+            sl = source.lower()
+            tl = text.lower()
+            for t in terms:
+                lt = t.lower()
+                if lt in sl:
+                    bonus += 0.12
+                if lt in tl:
+                    bonus += 0.03
+            return bonus
 
         results = []
         for idx, score in pairs:
-            if idx < 0 or idx >= len(self.records):
-                continue
             rec = self.records[idx]
             meta = rec["metadata"]
-            source = meta.get("source", "未知")
-            text = rec["text"]
-            rerank_score = float(score) + _score_keyword_hits(text, source, query_terms)
-            results.append(
-                {
-                    "text": text,
-                    "source": source,
-                    "chunk_index": meta.get("chunk_index", 0),
-                    "score": round(rerank_score, 4),
-                    "char_start": meta.get("char_start", 0),
-                    "total_chunks": meta.get("total_chunks", 1),
-                }
-            )
-        results.sort(key=lambda item: item["score"], reverse=True)
-        return results[: int(top_k)]
+            total = float(score) + _keyword_bonus(rec["text"], meta.get("source", ""), query_terms)
+            results.append(self._format_result(idx, total, source_extra="vector"))
+        results.sort(key=lambda x: x["score"], reverse=True)
+        return results[:int(top_k)]
 
 
 def _parse_args(argv):
@@ -233,9 +244,12 @@ def make_handler(backend):
                         "faiss_dir": str(backend.faiss_dir.resolve()),
                         "records": len(backend.records or []),
                         "embed_backend": cfg.EMBED_BACKEND,
-                        "model": cfg.LOCAL_MODEL_NAME
-                        if cfg.EMBED_BACKEND.lower() == "local"
-                        else cfg.EMBED_MODEL_NAME,
+                        "model": (
+                            cfg.LOCAL_MODEL_NAME
+                            if cfg.EMBED_BACKEND.lower() == "local"
+                            else cfg.EMBED_MODEL_NAME
+                        ),
+                        "hybrid_enabled": cfg.HYBRID_ENABLED and backend.bm25 is not None,
                     },
                 )
                 return
@@ -300,6 +314,7 @@ def make_handler(backend):
 
 def main():
     _configure_stdio()
+
     try:
         host, port, db_dir = _parse_args(sys.argv[1:])
     except Exception as e:
@@ -316,12 +331,32 @@ def main():
     print("加载完成")
     print("  记录数: {}".format(len(backend.records or [])))
     print("  Embedding 后端: {}".format(cfg.EMBED_BACKEND))
+    print("  混合检索: {}".format(
+        "启用 (BM25 + 向量)" if (cfg.HYBRID_ENABLED and backend.bm25 is not None)
+        else "纯向量"
+    ))
 
     server = ThreadingHTTPServer((host, port), make_handler(backend))
+    server.allow_reuse_address = True
+
+    def _shutdown(signum, frame):
+        print("\n正在关闭服务...")
+        server.shutdown()
+        print("服务已停止。")
+
+    signal.signal(signal.SIGINT, _shutdown)
+    signal.signal(signal.SIGTERM, _shutdown)
+
     print("服务已启动: http://{}:{}".format(host, port))
     print("健康检查: http://{}:{}/health".format(host, port))
     print("查询接口: http://{}:{}/search?q=你的问题".format(host, port))
-    server.serve_forever()
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+        print("服务已关闭。")
 
 
 if __name__ == "__main__":

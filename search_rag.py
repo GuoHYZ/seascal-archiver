@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-RAG 语义检索工具（FAISS 版）
+RAG 语义检索工具（FAISS 版，支持 BM25 混合检索）
 
-在已构建的向量索引中搜索相关问题，支持两种模式:
+在已构建的向量索引中搜索相关内容，支持三种模式:
 - 静默模式: 只返回相关文本块及来源
+- 混合模式（默认）: BM25 + 向量 RRF 融合检索
 - LLM 模式: 检索 + 调用在线 LLM 生成完整回答
 
 用法:
@@ -15,41 +16,13 @@ import json
 import os
 from pathlib import Path
 
-os.environ["HF_HUB_DISABLE_SSL_VERIFY"] = "1"
-os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
-import ssl as _ssl
-_ssl._create_default_https_context = _ssl._create_unverified_context
-
 import rag_config as cfg
-
-
-def _load_embedder():
-    backend = cfg.EMBED_BACKEND.lower()
-    if backend == "local":
-        import ssl
-        ssl._create_default_https_context = ssl._create_unverified_context
-        from sentence_transformers import SentenceTransformer
-        device = cfg.DEVICE
-        return SentenceTransformer(cfg.LOCAL_MODEL_NAME, device=device) if device else SentenceTransformer(cfg.LOCAL_MODEL_NAME)
-    elif backend in ("openai", "siliconflow"):
-        api_key = cfg.EMBED_API_KEY or os.environ.get("EMBED_API_KEY", "")
-        if not api_key:
-            raise ValueError("请设置 EMBED_API_KEY")
-        from openai import OpenAI
-        client = OpenAI(api_key=api_key, base_url=cfg.EMBED_API_BASE)
-        class APIEmbedder:
-            def __init__(self, c, m): self.client, self.model = c, m
-            def encode(self, texts, **kwargs):
-                resp = self.client.embeddings.create(model=self.model, input=texts)
-                return [d.embedding for d in resp.data]
-        return APIEmbedder(client, cfg.EMBED_MODEL_NAME)
-    else:
-        raise ValueError("不支持的 EMBED_BACKEND: {}".format(backend))
+from rag_utils import load_embedder, BM25Index, rrf_fusion
 
 
 def _load_faiss_and_meta(faiss_dir):
     import faiss
-    import numpy as np
+
     idx_path = Path(faiss_dir) / "index.faiss"
     meta_path = Path(faiss_dir) / "meta.json"
     if not idx_path.exists():
@@ -60,6 +33,16 @@ def _load_faiss_and_meta(faiss_dir):
     with open(meta_path, "r", encoding="utf-8") as f:
         meta = json.load(f)
     return index, meta["records"]
+
+
+def _load_bm25(faiss_dir):
+    bm25_path = Path(faiss_dir) / "bm25.pkl"
+    if not bm25_path.exists():
+        return None
+    try:
+        return BM25Index.load(bm25_path)
+    except Exception:
+        return None
 
 
 def search(query, top_k=None, db_dir=None):
@@ -81,13 +64,55 @@ def search(query, top_k=None, db_dir=None):
         return []
 
     try:
-        model = _load_embedder()
+        model = load_embedder()
     except Exception as e:
         print("[错误] Embedding 模型加载失败: {}".format(e))
         return []
 
     import numpy as np
-    query_vec = np.array([model.encode([query], normalize_embeddings=True)[0]]).astype("float32")
+
+    # ---- 向量检索 ----
+    query_vec = np.array(
+        [model.encode([query], normalize_embeddings=True)[0]]
+    ).astype("float32")
+
+    # ---- 混合检索（BM25 + 向量 RRF 融合） ----
+    if cfg.HYBRID_ENABLED:
+        bm25 = _load_bm25(faiss_dir)
+        if bm25 is not None:
+            recall_k = max(int(top_k) * cfg.HYBRID_RECALL_K, top_k + 5)
+
+            # 两路召回
+            bm25_pairs = bm25.search(query, top_k=recall_k)
+            candidate_k = max(recall_k * 4, 20)
+            scores, indices = index.search(query_vec, candidate_k)
+            vector_pairs = []
+            for i, s in zip(indices[0], scores[0]):
+                if 0 <= i < len(records):
+                    vector_pairs.append((int(i), float(s)))
+            vector_pairs = vector_pairs[:recall_k]
+
+            # RRF 融合
+            fused = rrf_fusion([bm25_pairs, vector_pairs], k=cfg.RRF_K)
+            top_indices = fused[:int(top_k)]
+
+            formatted = []
+            for idx, fused_score in top_indices:
+                rec = records[idx]
+                meta = rec["metadata"]
+                bm25_score = next((s for i, s in bm25_pairs if i == idx), 0.0)
+                vector_score = next((s for i, s in vector_pairs if i == idx), 0.0)
+                formatted.append({
+                    "text": rec["text"],
+                    "source": meta.get("source", "未知"),
+                    "chunk_index": meta.get("chunk_index", 0),
+                    "score": round(fused_score, 4),
+                    "bm25_score": round(bm25_score, 4),
+                    "vector_score": round(vector_score, 4),
+                })
+            return formatted
+
+    # ---- 纯向量检索（回退） ----
     scores, indices = index.search(query_vec, top_k)
 
     formatted = []
@@ -149,6 +174,7 @@ def answer_with_llm(query, top_k=None, db_dir=None):
 
     try:
         from openai import OpenAI
+
         client = OpenAI(api_key=api_key, base_url=cfg.LLM_API_BASE)
         user_message = (
             "以下是文档库中与用户问题相关的文本内容:\n\n"
@@ -214,11 +240,17 @@ def main():
             print("未找到相关内容。")
             return
 
-        print("检索结果 ({})：\n".format(len(chunks)))
+        mode_label = "混合检索" if cfg.HYBRID_ENABLED else "向量检索"
+        print("检索结果 ({}，{} 条)：\n".format(mode_label, len(chunks)))
         for i, c in enumerate(chunks, 1):
             print("─" * 50)
-            print("#{}  来源: {} (块{})  相似度: {}".format(
-                i, c["source"], c["chunk_index"], c["score"]
+            extra = ""
+            if "bm25_score" in c:
+                extra = "  BM25: {:.4f}  向量: {:.4f}".format(
+                    c["bm25_score"], c["vector_score"]
+                )
+            print("#{}  来源: {} (块{})  分数: {:.4f}{}".format(
+                i, c["source"], c["chunk_index"], c["score"], extra
             ))
             print("─" * 50)
             text = c["text"]

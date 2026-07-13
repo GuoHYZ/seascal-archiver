@@ -14,39 +14,52 @@ XLSX 电子表格转 TXT 模块。
 from pathlib import Path
 import traceback
 
+from rag_utils import escape_md_cell
+import rag_config as _cfg
+
 try:
     import openpyxl
 except ImportError:
     openpyxl = None
 
 
-def _escape_md_cell(value):
-    """将单元格值转为安全的 Markdown 文本。"""
-    if value is None:
-        return ""
-    text = str(value).strip()
-    # 替换竖线和换行，避免破坏 Markdown 表格
-    return text.replace("\n", " ").replace("\r", " ").replace("|", "\\|")
-
-
-def _sheet_to_markdown(ws, max_rows=2000, max_cols=100):
+def _sheet_to_markdown(ws, max_rows=None, max_cols=100):
     """
     将 openpyxl 工作表转换为 Markdown 表格字符串。
 
     ws:      工作表对象
-    max_rows: 最大读取行数（防止无限大表格）
+    max_rows: 最大读取行数。
+              None  → 使用 rag_config.XLSX_MAX_ROWS（0 = 不限制）
+              0     → 不限制，读取全部行
+              N > 0 → 限制读取前 N 行（超限会打印警告）
     max_cols: 最大读取列数
     返回: Markdown 表格字符串，或空字符串
     """
+    if max_rows is None:
+        max_rows = _cfg.XLSX_MAX_ROWS
+
+    actual_max_row = (
+        min(ws.max_row or 0, max_rows) if max_rows > 0 else (ws.max_row or 0)
+    )
+    actual_max_col = min(ws.max_column or 0, max_cols)
+
+    # 检测是否超限
+    if max_rows > 0 and ws.max_row and ws.max_row > max_rows:
+        print(
+            "  [警告] Sheet '{}' 共 {} 行，仅读取前 {} 行".format(
+                ws.title, ws.max_row, max_rows
+            )
+        )
+
     rows_data = []
 
     for row in ws.iter_rows(
         min_row=1,
-        max_row=min(ws.max_row or 0, max_rows),
-        max_col=min(ws.max_column or 0, max_cols),
+        max_row=actual_max_row,
+        max_col=actual_max_col,
         values_only=True,
     ):
-        row_data = [_escape_md_cell(cell) for cell in row]
+        row_data = [escape_md_cell(cell) for cell in row]
         # 跳过全空行
         if any(cell for cell in row_data):
             rows_data.append(row_data)
