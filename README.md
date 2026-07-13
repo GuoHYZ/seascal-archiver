@@ -1,345 +1,116 @@
-# 办公文档批量归档与语义检索工具 (Office2TXT + RAG)
+# 办公文档批量归档与语义检索工具
 
-将 PPTX、DOCX、XLSX 办公文档批量转换为纯文本 TXT（保留表格为 Markdown），并构建 Embedding 向量索引，支持语义检索。为 AI / RAG 知识库检索提供文本化档案。
-
-## 功能特性
-
-- **多格式支持**：PPTX（演示文稿）、DOCX（Word 文档）、XLSX（Excel 电子表格），以及 `.doc`/`.ppt`/`.xls` 旧格式（需本机 MS Office）
-- **递归扫描**：自动处理多级子目录，镜像输出目录结构
-- **表格保留**：Word/Excel 表格转为 Markdown 表格，PPT 表格提取文本
-- **增量更新**：仅处理新增/修改的文件，SHA256 内容哈希，跨设备复制后仍准确
-- **自动索引**：生成 `_索引.txt`，列出所有文档的格式、路径、字符数、源文件修改时间
-- **语义检索（RAG）**：基于 BGE 中文 Embedding 模型的 FAISS 向量索引，自然语言搜索文档内容
-- **GPU 加速**：支持 CUDA（RTX 4060 已验证），无 GPU 时自动切换 CPU
-- **LLM 回答模式**：检索结果可喂给在线 LLM（DeepSeek/GPT 等），结合严格的反幻觉提示词生成答案
-- **容错设计**：单文件失败不影响其他文件，单页异常不丢整文件
-- **可扩展**：新增文档格式只需添加转换模块并注册一行
-
-## 环境要求
-
-- Python 3.7+（已在 3.13 + CUDA 12.4 验证）
-- 依赖包（见 `requirements.txt`）
-- 旧格式支持需本机安装 Microsoft Office
-- GPU 加速需 NVIDIA 显卡 + CUDA（可选，CPU 也可运行）
-
-## 安装
-
-```bash
-# 克隆或下载项目到本地
-cd 脚本目录/
-
-# 安装依赖
-pip install -r requirements.txt
-```
+将 PPTX / DOCX / XLSX 办公文档批量转换为纯文本 TXT（表格保留为 Markdown），构建 FAISS + BM25 混合索引，支持语义 + 关键词检索。
 
 ## 快速开始
 
-### 第一步：准备文档
-
-将需要转换的办公文档放入一个文件夹（支持多级嵌套）：
-
-```
-D:\公司文档\
-├── 2023年\
-│   ├── 年度汇报.pptx
-│   └── 财务数据.xlsx
-├── 2024年\
-│   └── Q1\
-│       ├── 项目方案.docx
-│       └── 进度报告.pptx
-└── 制度文件\
-    └── 管理办法.docx
-```
-
-### 第二步：执行转换
+### 1. 安装
 
 ```bash
-# 全量转换（首次使用）
-python archive.py D:\公司文档
-
-# 自动输出到 D:\公司文档_TXT归档\
+pip install -r requirements.txt
 ```
 
-### 第三步：构建语义索引
+### 2. 文档转换
 
 ```bash
-# 为 TXT 归档构建向量索引
-python build_rag.py D:\公司文档_TXT归档
-
-# 或使用配置文件中的默认路径
-python build_rag.py
+python archive.py D:\公司文档              # 全量转换
+python archive.py D:\公司文档 -i           # 增量更新（仅处理变更文件）
 ```
 
-### 第四步：语义检索
+输出到 `D:\公司文档_TXT归档\`，镜像目录结构，自动生成 `_索引.txt`。
+
+### 3. 构建索引
 
 ```bash
-# 静默模式：只返回相关文本块及来源（--db 指定 TXT 归档目录）
-python search_rag.py "铁塔维护费用是多少" --db D:\公司文档_TXT归档
+python build_rag.py D:\公司文档_TXT归档    # 增量构建 FAISS + BM25
+python build_rag.py D:\公司文档_TXT归档 --force  # 强制全量重建
+```
 
-# LLM 回答模式：检索 + 在线 LLM 生成完整回答
-# （需在 rag_config.py 中配置 LLM_API_KEY）
+### 4. 检索
+
+```bash
+# 混合检索（BM25 + 向量，默认启用）
+python search_rag.py "华润燃气合同编号" --db D:\公司文档_TXT归档
+
+# 检索 + LLM 回答
 python search_rag.py "2024年新建基站数量" --db D:\公司文档_TXT归档 --llm
+
+# 启动 HTTP 检索后端（供外部应用调用）
+python search_backend.py --db D:\公司文档_TXT归档
+# → http://127.0.0.1:8765/search?q=你的问题
 ```
 
-### 日常维护（增量）
+## 功能特性
 
-```bash
-# 有新文档或修改旧文档时
-python archive.py D:\公司文档 -i              # 增量转换
-python build_rag.py D:\公司文档_TXT归档        # 增量重建索引
-
-# 同时清理过时文件
-python archive.py D:\公司文档 -i --clean
-```
-
-### 输出结果
-
-```
-D:\公司文档_TXT归档\
-├── _索引.txt              ← 总索引文件
-├── _archive_meta.json      ← 增量更新元数据（自动维护）
-├── 2023年\
-│   ├── 年度汇报.txt
-│   └── 财务数据.txt        ← Markdown 表格格式
-├── 2024年\
-│   └── Q1\
-│       ├── 项目方案.txt
-│       └── 进度报告.txt
-└── 制度文件\
-    └── 管理办法.txt
-
-脚本/
-└── _faiss/                 ← FAISS 向量索引（自动生成，~10MB/100文档）
-```
+- **多格式支持**：PPTX、DOCX、XLSX，旧格式 (.doc/.ppt/.xls) 通过 MS Office 自动转换
+- **增量更新**：SHA256 内容指纹，仅处理变更文件，跨设备复制后仍准确
+- **超大表格优化**：读取行数可配置（`XLSX_MAX_ROWS`），默认无限制
+- **混合检索**：BM25（关键词精确命中）+ 向量（语义关联）+ RRF 排名融合
+- **GPU 加速**：CUDA 自动检测，无 GPU 时回退 CPU
+- **容错设计**：单文件失败不影响整体，单页异常不丢整个文档
 
 ## 命令行参考
 
-### 文档转换
+```bash
+# 文档转换
+python archive.py <目录> [输出目录] [-i] [--clean]
 
-| 命令 | 说明 |
-|------|------|
-| `python archive.py <目录>` | 全量转换，输出到 `目录名_TXT归档` |
-| `python archive.py <目录> <输出>` | 指定输出路径 |
-| `python archive.py <目录> -i` | 增量模式 |
-| `python archive.py <目录> -i --clean` | 增量 + 清理过时 TXT |
-| `python pptx2txt.py` | 独立使用：转换 `./PPT/` 下 PPTX |
-| `python docx2txt.py` | 独立使用：转换 `./DOCX/` 下 DOCX |
-| `python xlsx2txt.py` | 独立使用：转换 `./XLSX/` 下 XLSX |
+# 索引构建
+python build_rag.py [TXT归档目录] [--force]
 
-### RAG 语义检索
+# 检索
+python search_rag.py "查询" --db <TXT归档目录> [--llm]
 
-| 命令 | 说明 |
-|------|------|
-| `python build_rag.py [TXT归档]` | 构建/更新向量索引 |
-| `python build_rag.py [TXT归档] --force` | 强制重建索引 |
-| `python search_rag.py "问题" --db <TXT归档>` | 语义检索（静默模式） |
-| `python search_rag.py "问题" --db <TXT归档> --llm` | 检索 + LLM 回答 |
+# HTTP 后端
+python search_backend.py --db <TXT归档目录> [--host 127.0.0.1] [--port 8765]
+```
 
 ## 项目结构
 
-```
-脚本/
-├── archive.py               ← 主入口（扫描、调度、索引生成、增量管理）
-├── pptx2txt.py              ← PPTX → TXT 转换模块
-├── docx2txt.py              ← DOCX → TXT 转换模块（段落 + 表格 → Markdown）
-├── xlsx2txt.py              ← XLSX → TXT 转换模块（多 Sheet → Markdown 表格）
-├── legacy2new.py            ← 旧格式转换（.doc/.ppt/.xls → .docx/.pptx/.xlsx，需 MS Office）
-├── rag_config.py            ← RAG 全局配置（模型、切分、API）
-├── build_rag.py             ← RAG 索引构建（TXT → 切块 → Embedding → Chroma）
-├── search_rag.py            ← RAG 语义检索（自然语言搜索 + 可选 LLM 回答）
-├── requirements.txt         ← Python 依赖清单
-├── .gitignore               ← Git 忽略规则
-├── README.md                ← 本文件
-└── 文档库检索提示词.md        ← AI 检索系统指令（配置到 Agent/Dify 知识库）
-```
+| 文件 | 用途 |
+|------|------|
+| `archive.py` | 主入口：扫描、转换、索引生成、增量管理 |
+| `pptx2txt.py` / `docx2txt.py` / `xlsx2txt.py` | 格式转换模块（统一 `convert()` 接口） |
+| `legacy2new.py` | 旧格式转换（需 MS Office） |
+| `rag_config.py` | RAG 全局配置（模型、切分、混合检索参数） |
+| `rag_utils.py` | 共享工具：Embedding 加载、BM25 索引、RRF 融合、单元格转义 |
+| `build_rag.py` | 索引构建：文本切分 → Embedding → FAISS + BM25 |
+| `search_rag.py` | CLI 检索：混合检索 / 纯向量 / LLM 回答 |
+| `search_backend.py` | HTTP 检索后端（REST API） |
 
-### 架构说明
+## 关键配置
 
-**文档转换管道**：每个转换模块遵循统一接口 `convert(source_path, dest_path) -> int`
+编辑 `rag_config.py`：
 
-```
-archive.py (调度器)
-  ├── scan_files()         → 递归扫描目录
-  ├── legacy2new.convert() → 旧格式自动转新格式
-  ├── _classify_files()    → SHA256 增量检测
-  ├── _get_converter()     → 动态加载转换模块
-  ├── pptx2txt.convert()
-  ├── docx2txt.convert()
-  ├── xlsx2txt.convert()
-  └── _write_index()       → 生成 _索引.txt
+```python
+CHUNK_MAX_CHARS = 800     # 文本块最大字符数
+SEARCH_TOP_K = 5           # 返回结果数
+XLSX_MAX_ROWS = 0          # Excel 最大读取行数（0=不限制）
+
+HYBRID_ENABLED = True      # 混合检索开关
+RRF_K = 60                 # 排名融合平滑常数
+BM25_K1 = 1.2              # BM25 词频饱和度
+
+LLM_MODEL_NAME = "deepseek-chat"  # LLM 回答模式使用的模型
 ```
 
-**RAG 检索管道**：
+## 检索模式
 
-```
-build_rag.py                              search_rag.py
-  TXT归档/  →  Chunker  →  Embedder       用户问题 → Embedder
-               500字/块    (GPU/CPU)                   ↓
-                           ↓                Chroma 向量搜索 (top5)
-                          Chroma                      ↓
-                          chroma_db/        相关块 + LLM → 最终回答
-```
+| 模式 | 适用场景 |
+|------|---------|
+| **混合检索**（默认） | BM25 命中精确词/编号 + 向量捕获语义关联 → RRF 融合 |
+| **纯向量回退** | BM25 索引未构建时自动切换 |
 
-新增格式只需：编写转换模块 → 在 `archive.py` 的 `SUPPORTED_FORMATS` 注册表添加一行
-
-## 跨设备使用
-
-`TXT归档文件夹` 是一个完全自包含的便携文档库，可以直接复制到 U 盘、另一台电脑或上传到云端：
-
-```
-D:\公司文档_TXT归档\        ← 一个文件夹 = 完整文档库
-├── _索引.txt              ← 总索引（修改时间、字符数等元信息）
-├── _archive_meta.json      ← 增量更新记录
-├── _faiss/                 ← FAISS 语义搜索向量索引
-├── 2023年\
-│   ├── 年度汇报.txt
-│   └── 财务数据.txt
-└── ...
-```
-
-- TXT 文件使用相对路径组织，无绝对路径依赖
-- 增量检测基于 SHA256 内容哈希，不依赖文件时间戳
-- `_chroma_db/` 与 TXT 同目录，整体移动无需任何适配
-
-## 配合 AI 使用 — 三种模式
-
-### 模式一：直接上传文件夹（最简方式）
-
-适用于 ChatGPT、Claude、Dify 知识库等**支持上传文件夹或附件的 AI**：
-
-1. 将 `TXT归档文件夹` 整体上传到 AI 知识库（作为附件或知识库来源）
-2. 将 `文档库检索提示词.md` 中的「提示词正文」复制到系统指令
-3. AI 会自动读取 `_索引.txt` 了解全貌，再按需深入检索具体 TXT 文件
-
-> AI 会按照提示词中规定的流程工作：先读索引 → 锁定文件 → 读取全文 → 逐条标注来源。所有反幻觉规则同样生效。
-
-### 模式二：本地 RAG Agent（功能最强）
-
-适用于需要**语义搜索、跨文件关联、批量查询**的场景，且 PC 上有 Python 环境：
-
-1. 完成上述「快速开始」中的四步操作（转换 → 构建索引）
-2. 将 `文档库检索提示词.md` 配置为 Agent 的系统指令
-3. Agent 会自动调用 `python search_rag.py "问题"` 进行语义检索，再调用在线 LLM 生成回答
-
-### 模式三：Dify / Cherry Studio 等平台
-
-将 `search_rag.py` 注册为自定义工具，`文档库检索提示词.md` 作为知识库的系统提示词。
-
-提示词包含四层反幻觉机制：
-- **源头隔离**：AI 只能读 TXT 文本，图片/图表不可见
-- **工具约束**：语义检索返回相似度距离作为可信度指标
-- **来源强制标注**：每条数据必须有 `【来源：文件名.txt】`
-- **输出自检**：6 项幻觉自检 + 13 项操作检查
+每路召回 `top_k × 3` 个候选，RRF 融合后截取前 `top_k` 个结果。
 
 ## 已知限制
 
 - 图片、图表、SmartArt 中的内容无法提取
 - 不提取文档批注、修订痕迹、页眉页脚
-- 不提取嵌入对象（OLE）
-- 旧格式（`.ppt` / `.doc` / `.xls`）需本机安装 Microsoft Office 才能自动转换
-- 语义检索对大范围列表型查询（如"列出所有项目"）可能不完整，建议结合索引文件辅助
+- 旧格式需本机安装 Microsoft Office
+- 语义检索对大范围列表型查询可能不完整，建议结合 `_索引.txt`
 
-## 旧格式支持
+## 扩展新格式
 
-脚本通过 `win32com` 调用本机 Microsoft Office 将旧格式自动转为新格式后处理：
-
-| 旧格式 | 依赖 | 转换方式 |
-|--------|------|---------|
-| `.doc` | MS Word | `win32com` → `.docx` |
-| `.ppt` | MS PowerPoint | `win32com` → `.pptx` |
-| `.xls` | MS Excel | `win32com` → `.xlsx` |
-
-未安装 Office 的设备上旧格式文件会被跳过。
-
-## 性能参考
-
-| 场景 | 时间（CPU） | 时间（GPU RTX 4060） |
-|------|------------|---------------------|
-| 归档 100 个文档 | 10-30 秒 | — |
-| 构建索引（800 块） | 30-60 秒 | 5-10 秒 |
-| 语义检索（单次） | 0.2-0.5 秒 | 0.05-0.1 秒 |
-| 模型下载（首次） | ~2 GB | 一次性 |
-
-## License
-
-此项目为内部工具，无特定许可证。
-## AionUI 鎺ュ叆锛堟湰鍦?HTTP 妫€绱㈠悗绔級
-
-濡傛灉浣犲笇鏈?AionUI 杩欑被搴旂敤鍔犺浇鎻愮ず璇嶅悗鐩存帴妫€绱㈢煡璇嗗簱锛屽彲浠ヤ娇鐢ㄧ嫭绔嬬殑鏌ヨ鍚庣锛?
-
-```bash
-python search_backend.py --db .\Yaoke3_Archives
-```
-
-榛樿浼氬惎鍔ㄥ湪锛?
-
-```text
-http://127.0.0.1:8765
-```
-
-鍙敤鎺ュ彛锛?
-
-- `GET /health`
-- `GET /search?q=闂&top_k=5`
-- `POST /search`
-
-`POST /search` 璇锋眰绀轰緥锛?
-
-```json
-{
-  "query": "鍩庡競鐢熷懡绾块」鐩湁鍝簺鏂规",
-  "top_k": 5
-}
-```
-
-杩斿洖缁撴灉涓?UTF-8 JSON锛屽寘鍚绱㈠埌鐨勬枃鏈潡銆佹潵婧愭枃浠躲€乧hunk 搴忓彿鍜岀浉浼煎害鍒嗗€笺€?
-
-杩欎釜鍚庣鐨勪紭鐐癸細
-
-- 鍚姩鏃跺彧鍔犺浇涓€娆?embedding 妯″瀷
-- 鍚姩鏃跺彧鍔犺浇涓€娆?FAISS 绱㈠紩
-- 涓嶈蛋 Windows 缁堢鏂囨湰灞曠ず锛屽彲閬垮厤涓枃涔辩爜
-- 闈炲父閫傚悎浣滀负 AionUI 鐨勫閮ㄦ绱㈠伐鍏?
-## 检索调用注意事项（实测结论）
-
-在交互式界面、Agent 或其他上层应用调用 `search_backend.py` 时，必须遵守以下规则：
-
-### 1. 中文 query 必须以 UTF-8 发送
-
-调用 `/search` 时必须使用：
-
-```http
-POST /search
-Content-Type: application/json; charset=utf-8
-```
-
-请求体示例：
-
-```json
-{
-  "query": "华润燃气 战略合作协议",
-  "top_k": 8
-}
-```
-
-如果后端返回中的 `query` 显示为 `????`，说明中文编码已损坏，本次检索结果无效，应重新发送请求。
-
-### 2. 优先使用短 query
-
-不要直接使用很长的自然语言整句，优先使用“实体词 + 主题词”的短 query。
-
-推荐示例：
-
-- `华润燃气 合作`
-- `华润燃气 战略合作协议`
-- `华润燃气 下一步合作工作计划`
-- `华润燃气 待解决问题`
-
-### 3. 适当提高 top_k
-
-对于“客户合作情况”“历史项目经验”“方案总结”这类问题，相关材料之间相似度通常较高，建议使用：
-
-- `top_k = 8`
-- `top_k = 10`
-
-不要只看前 1 条结果，应把返回结果当作候选资料包，再综合整理。
+1. 编写 `xxx2txt.py`，实现 `convert(source_path, dest_path) -> int`
+2. 在 `archive.py` 的 `SUPPORTED_FORMATS` 添加一行：`".xxx": ("xxx2txt", "描述", True)`

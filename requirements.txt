@@ -1,16 +1,16 @@
+# === 文档转换（必装） ===
 python-pptx>=0.6.21
 python-docx>=0.8.11
 openpyxl>=3.1.0
-pywin32>=305
+pywin32>=305          # 旧格式转换 (.doc/.ppt/.xls)，需本机 Microsoft Office
 
-# === RAG 检索增强（可选） ===
-# 如果不需要语义搜索功能可不安装以下依赖
+# === RAG 语义检索 ===
 faiss-cpu>=1.7.0
 sentence-transformers>=3.0.0
+numpy>=1.21
 
-# === 旧格式转换 ===
-# pywin32 用于旧格式转换 (.doc/.ppt/.xls)，需要本机安装 Microsoft Office
-# 如果不需要旧格式支持可不安装此依赖
+# === LLM 在线回答 ===
+openai>=1.0.0         # search_rag.py --llm 模式
 
-# === LLM 在线回答（可选） ===
-# openai>=1.0.0  # 如需 search_rag.py --llm 模式
+# === BM25 混合检索 ===
+# 自实现于 rag_utils.py，无额外依赖
