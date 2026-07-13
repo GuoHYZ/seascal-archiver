@@ -7,10 +7,10 @@ Seascal's Archiver — 统一交互入口
 
 用法:
     python main.py                    # 交互式菜单
-    python main.py convert <目录>     # 转换文档
-    python main.py build <归档目录>   # 构建索引
+    python main.py convert <目录> [输出目录]  # 转换文档
+    python main.py build <归档目录>          # 构建索引
     python main.py search <查询> <归档目录>  # 检索
-    python main.py backend <归档目录> # 启动检索后端
+    python main.py backend <归档目录>        # 启动检索后端
 """
 
 import sys
@@ -40,9 +40,16 @@ def _cmd_convert():
 
     print("\n===== 文档转换 =====")
     src = _get_dir("请输入文档目录路径: ")
+
     use_incremental = input("增量模式？(Y/n): ").strip().lower()
     incremental = use_incremental not in ("n", "no")
-    dst = src + "_TXT_archive"
+
+    custom_dst = input("自定义输出目录？(留空使用默认: {}_TXT_archive): ".format(src)).strip()
+    if custom_dst:
+        dst = custom_dst
+    else:
+        dst = src + "_TXT_archive"
+
     print("输出目录: {}".format(dst))
     archive(src, dst, incremental=incremental)
 
@@ -67,7 +74,6 @@ def _cmd_build():
 
 def _cmd_search():
     """交互式检索。"""
-    from search.search_rag import search
     import rag_config as cfg
 
     print("\n===== 交互检索 =====")
@@ -77,18 +83,28 @@ def _cmd_search():
     ))
     print("输入空行退出\n")
 
+    # 复用 SearchBackend（避免重复加载模型）
+    from search.search_backend import SearchBackend
+    backend = SearchBackend(db_dir=db_dir)
+    backend.load()
+
     while True:
         query = input("查询> ").strip()
         if not query:
             print("已退出检索")
             break
 
-        chunks = search(query, db_dir=db_dir)
+        try:
+            chunks = backend.search(query, top_k=cfg.SEARCH_TOP_K)
+        except Exception as e:
+            print("  检索失败: {}\n".format(e))
+            continue
+
         if not chunks:
             print("  未找到相关内容\n")
             continue
 
-        for i, c in enumerate(chunks[:cfg.SEARCH_TOP_K], 1):
+        for i, c in enumerate(chunks, 1):
             source = c.get("source", "未知")
             score = c.get("score", 0)
             text = c.get("text", "")
@@ -102,8 +118,9 @@ def _cmd_search():
 
 def _cmd_backend():
     """启动检索后端。"""
-    from search.search_backend import SearchBackend
     import signal
+    from search.search_backend import SearchBackend, make_handler
+    from http.server import ThreadingHTTPServer
 
     print("\n===== 启动检索后端 =====")
     db_dir = _get_dir("请输入 TXT 归档目录路径: ")
@@ -111,13 +128,9 @@ def _cmd_backend():
     backend = SearchBackend(db_dir=db_dir)
     backend.load()
 
-    from http.server import ThreadingHTTPServer
-
     host = "127.0.0.1"
     port = 8765
 
-    # 导入 make_handler
-    from search.search_backend import make_handler
     server = ThreadingHTTPServer((host, port), make_handler(backend))
     server.allow_reuse_address = True
 
@@ -129,7 +142,7 @@ def _cmd_backend():
     try:
         signal.signal(signal.SIGTERM, _shutdown)
     except AttributeError:
-        pass  # Windows 不支持 SIGTERM
+        pass
 
     print("\n服务已启动: http://{}:{}".format(host, port))
     print("健康检查: http://{}:{}/health".format(host, port))
@@ -190,15 +203,15 @@ def main():
     cmd = args[0].lower()
 
     if cmd == "convert":
-        # python main.py convert <目录>
         if len(args) < 2:
             _cmd_convert()
         else:
+            src = args[1]
+            dst = args[2] if len(args) > 2 else src + "_TXT_archive"
             from archive import archive
-            archive(args[1], incremental=True)
+            archive(src, dst, incremental=True)
 
     elif cmd == "build":
-        # python main.py build <归档目录>
         if len(args) < 2:
             _cmd_build()
         else:
@@ -206,37 +219,42 @@ def main():
             build_index(txt_dir=args[1])
 
     elif cmd == "search":
-        # python main.py search <查询> <归档目录>
         if len(args) < 3:
             if len(args) == 2:
                 print("用法: python main.py search <查询> <归档目录>")
                 sys.exit(1)
             _cmd_search()
         else:
-            from search.search_rag import search
-            query = args[1]
-            results = search(query, db_dir=args[2])
+            from search.search_backend import SearchBackend
+            backend = SearchBackend(db_dir=args[2])
+            backend.load()
+            results = backend.search(args[1])
             for i, c in enumerate(results, 1):
-                print("#{}  {}  ({:.4f})".format(i, c["source"], c["score"]))
-                if len(c["text"]) > 200:
-                    print(c["text"][:200] + "...\n")
+                print("#{}  {}  ({:.4f})".format(i, c.get("source", "未知"), c.get("score", 0)))
+                text = c.get("text", "")
+                if len(text) > 200:
+                    print(text[:200] + "...\n")
                 else:
-                    print(c["text"] + "\n")
+                    print(text + "\n")
 
     elif cmd == "backend":
-        # python main.py backend <归档目录>
         if len(args) < 2:
             _cmd_backend()
         else:
-            from search.search_backend import SearchBackend, make_handler, _parse_args
-            backend = SearchBackend(db_dir=args[1])
-            backend.load()
+            from search.search_backend import SearchBackend, make_handler
             from http.server import ThreadingHTTPServer
             import signal
+
+            backend = SearchBackend(db_dir=args[1])
+            backend.load()
+
             host, port = "127.0.0.1", 8765
             server = ThreadingHTTPServer((host, port), make_handler(backend))
             server.allow_reuse_address = True
-            def _shutdown(s, f): server.shutdown()
+
+            def _shutdown(s, f):
+                server.shutdown()
+
             signal.signal(signal.SIGINT, _shutdown)
             print("服务已启动: http://{}:{}".format(host, port))
             try:

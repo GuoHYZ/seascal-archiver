@@ -17,7 +17,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import rag_config as cfg
-from search_backend import SearchBackend
+from search.search_backend import SearchBackend
 
 
 def search(query, top_k=None, db_dir=None):
