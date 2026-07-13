@@ -15,6 +15,9 @@ import hashlib
 from pathlib import Path
 from datetime import datetime
 
+# 兼容直接运行（python search/build_rag.py）和从上级导入
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import rag_config as cfg
 from rag_utils import load_embedder
 

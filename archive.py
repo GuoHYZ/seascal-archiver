@@ -23,6 +23,7 @@
 import sys
 import json
 import hashlib
+import importlib
 import traceback
 from pathlib import Path
 from datetime import datetime
@@ -61,7 +62,7 @@ def _get_converter(extension):
         return None
 
     try:
-        mod = __import__(module_name)
+        mod = importlib.import_module("converters." + module_name)
         return mod.convert
     except ImportError as e:
         print(f"  [警告] 无法加载模块 {module_name}，跳过 {extension} 文件")
@@ -403,7 +404,7 @@ def archive(input_dir, output_dir, incremental=False, clean_stale=False):
 
         # 一次性导入 legacy2new（避免循环内重复 import）
         try:
-            import legacy2new
+            from converters import legacy2new
             HAS_LEGACY = True
         except ImportError:
             HAS_LEGACY = False

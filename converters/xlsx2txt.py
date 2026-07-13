@@ -11,11 +11,17 @@ XLSX 电子表格转 TXT 模块。
 统一接口：convert(source_path, dest_path) -> int
 """
 
+import sys
 from pathlib import Path
 import traceback
 
-from rag_utils import escape_md_cell
-import rag_config as _cfg
+try:
+    from rag_utils import escape_md_cell
+    import rag_config as _cfg
+except ImportError:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from rag_utils import escape_md_cell
+    import rag_config as _cfg
 
 try:
     import openpyxl

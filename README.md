@@ -70,13 +70,16 @@ python search_backend.py --db <TXT归档目录> [--host 127.0.0.1] [--port 8765]
 | 文件 | 用途 |
 |------|------|
 | `archive.py` | 主入口：扫描、转换、索引生成、增量管理 |
-| `pptx2txt.py` / `docx2txt.py` / `xlsx2txt.py` | 格式转换模块（统一 `convert()` 接口） |
-| `legacy2new.py` | 旧格式转换（需 MS Office） |
 | `rag_config.py` | RAG 全局配置（模型、切分、混合检索参数） |
 | `rag_utils.py` | 共享工具：Embedding 加载、BM25 索引、RRF 融合、单元格转义 |
-| `build_rag.py` | 索引构建：文本切分 → Embedding → FAISS + BM25 |
-| `search_rag.py` | CLI 检索：混合检索 / 纯向量 / LLM 回答 |
-| `search_backend.py` | HTTP 检索后端（REST API） |
+| `converters/pptx2txt.py` | PPTX → TXT 转换 |
+| `converters/docx2txt.py` | DOCX → TXT 转换（段落 + Markdown 表格） |
+| `converters/xlsx2txt.py` | XLSX → TXT 转换（多 Sheet → Markdown） |
+| `converters/legacy2new.py` | 旧格式转换（.doc/.ppt/.xls，需 MS Office） |
+| `search/build_rag.py` | 索引构建：文本切分 → Embedding → FAISS + BM25 |
+| `search/search_rag.py` | CLI 检索：混合检索 / 纯向量 / LLM 回答 |
+| `search/search_backend.py` | HTTP 检索后端（REST API） |
+| `docs/` | 提示词文件：`agent_prompt.txt`、`文档库检索提示词.md` |
 
 ## 关键配置
 

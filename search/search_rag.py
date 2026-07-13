@@ -16,6 +16,8 @@ import json
 import os
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import rag_config as cfg
 from rag_utils import load_embedder, BM25Index, rrf_fusion
 

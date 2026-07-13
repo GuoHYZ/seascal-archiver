@@ -21,7 +21,7 @@ TXT_ARCHIVE_DIR = Path(__file__).parent / "TXT归档"
 FAISS_SUBDIR = "_faiss"
 
 # 文档库检索提示词文件路径（作为 LLM system prompt）
-PROMPT_FILE = Path(__file__).parent / "文档库检索提示词.md"
+PROMPT_FILE = Path(__file__).parent / "docs" / "文档库检索提示词.md"
 
 # ============================================================
 # Embedding 模型配置
