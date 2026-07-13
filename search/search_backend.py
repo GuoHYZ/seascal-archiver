@@ -150,6 +150,7 @@ class SearchBackend:
                 results.append({
                     "text": rec["text"],
                     "source": meta.get("source", "未知"),
+                    "file_path": str(self.db_dir.resolve() / meta.get("source", "")),
                     "chunk_index": meta.get("chunk_index", 0),
                     "score": round(fused_score, 4),
                     "bm25_score": round(bm25_score, 4),
@@ -184,7 +185,9 @@ class SearchBackend:
             rec = self.records[idx]
             meta = rec["metadata"]
             total = float(score) + _keyword_bonus(rec["text"], meta.get("source", ""), query_terms)
-            results.append(self._format_result(idx, total, source_extra="vector"))
+            r = self._format_result(idx, total, source_extra="vector")
+            r["file_path"] = str(self.db_dir.resolve() / meta.get("source", ""))
+            results.append(r)
         results.sort(key=lambda x: x["score"], reverse=True)
         return results[:int(top_k)]
 
