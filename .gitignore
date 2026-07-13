@@ -6,6 +6,7 @@ __pycache__/
 # 向量数据库（可重建）
 _faiss/
 chroma_db/
+*.pkl
 
 # TXT 归档输出（自动生成）
 *_TXT归档/
