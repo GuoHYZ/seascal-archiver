@@ -113,11 +113,21 @@ def load_embedder():
         from sentence_transformers import SentenceTransformer
 
         device = cfg.DEVICE
-        print("加载本地模型: {} ...".format(cfg.LOCAL_MODEL_NAME))
-        if device:
-            model = SentenceTransformer(cfg.LOCAL_MODEL_NAME, device=device)
-        else:
-            model = SentenceTransformer(cfg.LOCAL_MODEL_NAME)
+        if device is None:
+            # 自动检测最优后端：CUDA → MPS → CPU
+            import torch
+            if torch.cuda.is_available():
+                device = "cuda"
+            elif getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+                device = "mps"  # Apple Silicon GPU
+            else:
+                device = "cpu"
+                # CPU 多线程优化，避免只用1个核
+                cpu_count = os.cpu_count() or 4
+                torch.set_num_threads(min(cpu_count, 8))
+
+        print("加载本地模型: {} (device={})...".format(cfg.LOCAL_MODEL_NAME, device))
+        model = SentenceTransformer(cfg.LOCAL_MODEL_NAME, device=device)
         print("  模型加载完成，运行设备: {}".format(model.device))
         return model
 

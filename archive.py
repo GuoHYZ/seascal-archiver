@@ -28,6 +28,9 @@ import traceback
 from pathlib import Path
 from datetime import datetime
 
+# 便携包兼容：将自己所在目录加入 sys.path，确保能导入同级 converters/ 包
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 
 # ============================================================
 # 格式注册表 — 扩展添加只需在下面加一行
