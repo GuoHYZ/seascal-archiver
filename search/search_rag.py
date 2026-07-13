@@ -1,10 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-RAG 语义检索工具（FAISS 版，支持 BM25 混合检索）
+RAG 语义检索工具（CLI 包装，复用 SearchBackend）
 
-在已构建的向量索引中搜索相关内容，支持三种模式:
+在已构建的向量索引中搜索相关内容，支持两种模式:
 - 静默模式: 只返回相关文本块及来源
-- 混合模式（默认）: BM25 + 向量 RRF 融合检索
 - LLM 模式: 检索 + 调用在线 LLM 生成完整回答
 
 用法:
@@ -12,124 +11,28 @@ RAG 语义检索工具（FAISS 版，支持 BM25 混合检索）
 """
 
 import sys
-import json
 import os
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import rag_config as cfg
-from rag_utils import load_embedder, BM25Index, rrf_fusion
-
-
-def _load_faiss_and_meta(faiss_dir):
-    import faiss
-
-    idx_path = Path(faiss_dir) / "index.faiss"
-    meta_path = Path(faiss_dir) / "meta.json"
-    if not idx_path.exists():
-        print("[错误] FAISS 索引不存在: {}".format(idx_path))
-        print("       请先运行: python build_rag.py")
-        return None, None
-    index = faiss.read_index(str(idx_path))
-    with open(meta_path, "r", encoding="utf-8") as f:
-        meta = json.load(f)
-    return index, meta["records"]
-
-
-def _load_bm25(faiss_dir):
-    bm25_path = Path(faiss_dir) / "bm25.pkl"
-    if not bm25_path.exists():
-        return None
-    try:
-        return BM25Index.load(bm25_path)
-    except Exception:
-        return None
+from search_backend import SearchBackend
 
 
 def search(query, top_k=None, db_dir=None):
-    if top_k is None:
-        top_k = cfg.SEARCH_TOP_K
+    """
+    检索接口（复用 SearchBackend，与 search_backend.py 共享同一逻辑）。
 
-    if db_dir is None:
-        faiss_dir = Path(cfg.TXT_ARCHIVE_DIR).resolve() / cfg.FAISS_SUBDIR
-    else:
-        faiss_dir = Path(db_dir).resolve() / cfg.FAISS_SUBDIR
-
-    if not faiss_dir.exists():
-        print("[错误] 向量索引不存在: {}".format(faiss_dir))
-        print("       请先运行: python build_rag.py")
-        return []
-
-    index, records = _load_faiss_and_meta(faiss_dir)
-    if index is None or records is None:
-        return []
-
+    返回: list of dict，字段见 SearchBackend.search() 的返回值。
+    """
+    backend = SearchBackend(db_dir=db_dir)
     try:
-        model = load_embedder()
+        backend.load()
+        return backend.search(query, top_k=top_k)
     except Exception as e:
-        print("[错误] Embedding 模型加载失败: {}".format(e))
+        print("[错误] 检索失败: {}".format(e))
         return []
-
-    import numpy as np
-
-    # ---- 向量检索 ----
-    query_vec = np.array(
-        [model.encode([query], normalize_embeddings=True)[0]]
-    ).astype("float32")
-
-    # ---- 混合检索（BM25 + 向量 RRF 融合） ----
-    if cfg.HYBRID_ENABLED:
-        bm25 = _load_bm25(faiss_dir)
-        if bm25 is not None:
-            recall_k = max(int(top_k) * cfg.HYBRID_RECALL_K, top_k + 5)
-
-            # 两路召回
-            bm25_pairs = bm25.search(query, top_k=recall_k)
-            candidate_k = max(recall_k * 4, 20)
-            scores, indices = index.search(query_vec, candidate_k)
-            vector_pairs = []
-            for i, s in zip(indices[0], scores[0]):
-                if 0 <= i < len(records):
-                    vector_pairs.append((int(i), float(s)))
-            vector_pairs = vector_pairs[:recall_k]
-
-            # RRF 融合
-            fused = rrf_fusion([bm25_pairs, vector_pairs], k=cfg.RRF_K)
-            top_indices = fused[:int(top_k)]
-
-            formatted = []
-            for idx, fused_score in top_indices:
-                rec = records[idx]
-                meta = rec["metadata"]
-                bm25_score = next((s for i, s in bm25_pairs if i == idx), 0.0)
-                vector_score = next((s for i, s in vector_pairs if i == idx), 0.0)
-                formatted.append({
-                    "text": rec["text"],
-                    "source": meta.get("source", "未知"),
-                    "chunk_index": meta.get("chunk_index", 0),
-                    "score": round(fused_score, 4),
-                    "bm25_score": round(bm25_score, 4),
-                    "vector_score": round(vector_score, 4),
-                })
-            return formatted
-
-    # ---- 纯向量检索（回退） ----
-    scores, indices = index.search(query_vec, top_k)
-
-    formatted = []
-    for idx, score in zip(indices[0], scores[0]):
-        if idx < 0 or idx >= len(records):
-            continue
-        rec = records[idx]
-        meta = rec["metadata"]
-        formatted.append({
-            "text": rec["text"],
-            "source": meta.get("source", "未知"),
-            "chunk_index": meta.get("chunk_index", 0),
-            "score": round(float(score), 4),
-        })
-    return formatted
 
 
 def _load_system_prompt():
@@ -148,8 +51,8 @@ def _build_context(chunks, max_chars):
     parts = []
     total = 0
     for c in chunks:
-        header = "\n--- [来源: {} (块{})] ---\n".format(c["source"], c["chunk_index"])
-        block = header + c["text"]
+        header = "\n--- [来源: {} (块{})] ---\n".format(c.get("source", "未知"), c.get("chunk_index", 0))
+        block = header + c.get("text", "")
         if total + len(block) > max_chars:
             break
         parts.append(block)
@@ -249,15 +152,15 @@ def main():
             extra = ""
             if "bm25_score" in c:
                 extra = "  BM25: {:.4f}  向量: {:.4f}".format(
-                    c["bm25_score"], c["vector_score"]
+                    c.get("bm25_score", 0), c.get("vector_score", 0)
                 )
             print("#{}  来源: {} (块{})  分数: {:.4f}{}".format(
-                i, c["source"], c["chunk_index"], c["score"], extra
+                i, c.get("source", "未知"), c.get("chunk_index", 0), c.get("score", 0), extra
             ))
             print("─" * 50)
-            text = c["text"]
+            text = c.get("text", "")
             if len(text) > 500:
-                text = text[:500] + "\n... [截断，共 {} 字符]".format(len(c["text"]))
+                text = text[:500] + "\n... [截断，共 {} 字符]".format(len(text))
             print(text)
             print()
 
