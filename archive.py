@@ -691,7 +691,7 @@ def main():
 
     if output_dir is None:
         input_path = Path(input_dir)
-        output_dir = input_path.parent / "{}_TXT归档".format(input_path.name)
+        output_dir = input_path.parent / "{}_TXT_archive".format(input_path.name)
 
     archive(input_dir, output_dir, incremental=incremental, clean_stale=clean_stale)
 
