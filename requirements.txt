@@ -2,7 +2,7 @@
 python-pptx>=0.6.21
 python-docx>=0.8.11
 openpyxl>=3.1.0
-pywin32>=305          # 旧格式转换 (.doc/.ppt/.xls)，需本机 Microsoft Office
+pywin32>=305; sys_platform == "win32"   # 旧格式转换，仅 Windows（需 MS Office）
 
 # === RAG 语义检索 ===
 faiss-cpu>=1.7.0
