@@ -118,7 +118,6 @@ def _cmd_search():
 
 def _cmd_backend():
     """启动检索后端。"""
-    import signal
     from search.search_backend import SearchBackend, make_handler
     from http.server import ThreadingHTTPServer
 
@@ -134,23 +133,13 @@ def _cmd_backend():
     server = ThreadingHTTPServer((host, port), make_handler(backend))
     server.allow_reuse_address = True
 
-    def _shutdown(signum, frame):
-        print("\n正在关闭服务...")
-        server.shutdown()
-
-    signal.signal(signal.SIGINT, _shutdown)
-    try:
-        signal.signal(signal.SIGTERM, _shutdown)
-    except AttributeError:
-        pass
-
     print("\n服务已启动: http://{}:{}".format(host, port))
     print("健康检查: http://{}:{}/health".format(host, port))
     print("按 Ctrl+C 停止服务")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        pass
+        print("\n正在关闭服务...")
     finally:
         server.server_close()
         print("服务已关闭")
