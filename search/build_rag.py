@@ -306,9 +306,11 @@ def build_index(txt_dir=None, force=False):
         # 加载旧 FAISS 索引，提取未变更 chunk 的旧向量
         print("  从旧索引复用 {} 个未变更 chunk 的向量...".format(unchanged_count))
         old_index = faiss.read_index(str(old_index_path))
-        old_all = faiss.vector_to_array(old_index.xb).reshape(old_index.ntotal, -1)
-        old_ids = [c["id"] for c in all_chunks[:unchanged_count] if "id" in c]
-        old_embeddings = old_all[old_ids]  # numpy 按索引提取
+        old_ids = np.array(
+            [c["id"] for c in all_chunks[:unchanged_count] if "id" in c],
+            dtype="int64",
+        )
+        old_embeddings = old_index.reconstruct_batch(old_ids)
 
         # 仅编码新增/变更的 chunk
         new_chunks = all_chunks[unchanged_count:]
