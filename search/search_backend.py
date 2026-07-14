@@ -142,22 +142,13 @@ class SearchBackend:
 
             results = []
             for idx, fused_score in top_indices:
-                rec = self.records[idx]
-                meta = rec["metadata"]
-                # 分别记录各路分数供调试
+                r = self._format_result(idx, fused_score, source_extra="hybrid")
                 bm25_score = next((s for i, s in bm25_pairs if i == idx), 0.0)
                 vector_score = next((s for i, s in vector_pairs if i == idx), 0.0)
-                results.append({
-                    "text": rec["text"],
-                    "source": meta.get("source", "未知"),
-                    "file_path": str(self.db_dir.resolve() / meta.get("source", "")),
-                    "chunk_index": meta.get("chunk_index", 0),
-                    "score": round(fused_score, 4),
-                    "bm25_score": round(bm25_score, 4),
-                    "vector_score": round(vector_score, 4),
-                    "char_start": meta.get("char_start", 0),
-                    "total_chunks": meta.get("total_chunks", 1),
-                })
+                r["bm25_score"] = round(bm25_score, 4)
+                r["vector_score"] = round(vector_score, 4)
+                r["file_path"] = str(self.db_dir.resolve() / self.records[idx]["metadata"].get("source", ""))
+                results.append(r)
             return results
 
         # 纯向量模式：多召回 + 简单关键词微调

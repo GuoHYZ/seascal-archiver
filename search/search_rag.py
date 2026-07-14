@@ -61,6 +61,9 @@ def _build_context(chunks, max_chars):
 
 
 def answer_with_llm(query, top_k=None, db_dir=None):
+    if not cfg.LLM_ENABLED:
+        return "LLM 回答模式未启用。请在 rag_config.py 中设置 LLM_ENABLED = True"
+
     chunks = search(query, top_k, db_dir)
     if not chunks:
         return "未在文档库中找到相关信息。"
