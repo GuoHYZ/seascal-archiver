@@ -57,17 +57,11 @@ def _cmd_convert():
 def _cmd_build():
     """索引构建。"""
     from search.build_rag import build_index
-    from rag_utils import load_embedder
 
     print("\n===== 构建索引 =====")
     txt_dir = _get_dir("请输入 TXT 归档目录路径: ")
     use_force = input("强制全量重建？(y/N): ").strip().lower()
     force = use_force in ("y", "yes")
-
-    # 预加载模型，显示 GPU/CPU 设备信息
-    print()
-    model = load_embedder()
-    print("  运行设备: {}".format(model.device))
 
     build_index(txt_dir=txt_dir, force=force)
 

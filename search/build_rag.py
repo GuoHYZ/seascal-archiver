@@ -297,12 +297,39 @@ def build_index(txt_dir=None, force=False):
         print("[错误] 模型加载失败: {}".format(e))
         return
 
-    # ---- 向量化 ----
+    # ---- 向量化（增量：复用旧 embedding，仅编码新 chunk） ----
     print("\n向量化 {} 个文本块...".format(len(all_chunks)))
-    texts = [_build_embedding_text(c) for c in all_chunks]
-    embeddings = np.array(
-        model.encode(texts, normalize_embeddings=True, show_progress_bar=True)
-    ).astype("float32")
+    old_index_path = faiss_dir / "index.faiss"
+    unchanged_count = sum(1 for c in all_chunks if "id" in c)  # 带旧 id 的 chunk 是复用的
+
+    if not force and old_index_path.exists() and unchanged_count > 0:
+        # 加载旧 FAISS 索引，提取未变更 chunk 的旧向量
+        print("  从旧索引复用 {} 个未变更 chunk 的向量...".format(unchanged_count))
+        old_index = faiss.read_index(str(old_index_path))
+        old_all = faiss.vector_to_array(old_index.xb).reshape(old_index.ntotal, -1)
+        old_ids = [c["id"] for c in all_chunks[:unchanged_count] if "id" in c]
+        old_embeddings = old_all[old_ids]  # numpy 按索引提取
+
+        # 仅编码新增/变更的 chunk
+        new_chunks = all_chunks[unchanged_count:]
+        if new_chunks:
+            new_texts = [_build_embedding_text(c) for c in new_chunks]
+            print("  编码 {} 个新增/变更 chunk...".format(len(new_chunks)))
+            new_embeddings = np.array(
+                model.encode(new_texts, normalize_embeddings=True, show_progress_bar=True)
+            ).astype("float32")
+            embeddings = np.vstack([old_embeddings, new_embeddings])
+        else:
+            embeddings = old_embeddings
+        print("  总计 {} 条向量（复用 {}，新编码 {}）".format(
+            len(embeddings), unchanged_count, len(new_chunks) if new_chunks else 0
+        ))
+    else:
+        # 全量编码
+        texts = [_build_embedding_text(c) for c in all_chunks]
+        embeddings = np.array(
+            model.encode(texts, normalize_embeddings=True, show_progress_bar=True)
+        ).astype("float32")
 
     # ---- 构建 FAISS 索引 ----
     dim = embeddings.shape[1]
