@@ -43,6 +43,7 @@ python search/search_backend.py --db D:\公司文档_TXT_archive
 
 - **多格式支持**：PPTX、DOCX、XLSX，旧格式 (.doc/.ppt/.xls) 通过 MS Office 自动转换
 - **增量更新**：SHA256 内容指纹，仅处理变更文件，跨设备复制后仍准确
+- **智能增量索引**：Embedding 向量缓存复用，仅对新增/变更 chunk 编码，增量构建速度提升数十倍
 - **超大表格优化**：读取行数可配置（`XLSX_MAX_ROWS`），默认无限制
 - **混合检索**：BM25（关键词精确命中）+ 向量（语义关联）+ RRF 排名融合
 - **多硬件加速**：CUDA / MPS / CPU 自动检测，CPU 多线程优化

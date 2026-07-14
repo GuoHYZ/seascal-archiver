@@ -5,7 +5,7 @@ openpyxl>=3.1.0
 pywin32>=305; sys_platform == "win32"   # 旧格式转换，仅 Windows（需 MS Office）
 
 # === RAG 语义检索 ===
-faiss-cpu>=1.7.0
+faiss-cpu>=1.7.2
 sentence-transformers>=3.0.0
 numpy>=1.21
 
